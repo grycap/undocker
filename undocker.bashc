@@ -1,0 +1,303 @@
+#!/bin/bash
+#
+# undocker
+# Copyright (C) - 
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+function usage() {
+  cat <<EOF
+
+This is a template for a bash application
+
+undocker <appname>
+
+  --version | -V            Shows the version number and finalizes.
+  --verbose | -v            Shows more information about the procedure.
+  --debug                   Shows a lot more information about the procedure.
+  --help | -h               Shows this help and exits.
+EOF
+}
+
+export GID="$(id -g)"
+
+function verify_dependencies() {
+  if false; then
+    bashc.finalize 1 "dependency failed"
+  fi
+}
+
+# The list of default configuration files (it is set here just in case that you want to change it in the commandline)
+CONFIGFILES="/etc/default/undocker.conf /etc/undocker/undocker.conf /etc/undocker.conf $HOME/.undocker/undocker.conf etc/undocker.conf etc/undocker/undocker.conf undocker.conf"
+
+# The basic include than gets all from bashc (you should use -S flag to remove the unused functions)
+source all.bashc
+
+# A include for the version of this application
+source version
+
+# Parse the commandline into an array
+bashc.parameter_parse_commandline "$@"
+
+DOCKER_COMMANDS=(
+"container"
+"image"
+"network"
+"node"
+"plugin"
+"secret"
+"service"
+"stack"
+"swarm"
+"system"
+"volume"
+"attach"
+"build"
+"commit"
+"cp"
+"create"
+"diff"
+"events"
+"exec"
+"export"
+"history"
+"images"
+"import"
+"info"
+"inspect"
+"kill"
+"load"
+"login"
+"logout"
+"logs"
+"pause"
+"port"
+"ps"
+"pull"
+"push"
+"rename"
+"restart"
+"rm"
+"rmi"
+"run"
+"save"
+"search"
+"start"
+"stats"
+"stop"
+"tag"
+"top"
+"unpause"
+"update"
+"version"
+"wait"
+)
+
+function is_docker_command() {
+  for c in "${DOCKER_COMMANDS[@]}"; do
+    if [ "$c" == "$1" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+PARAMS_TO_REMOVE=("--config string"
+"-D|--debug"
+"--help"
+"-H|--host list"
+"-l|--log-level string"
+"--tls"
+"--tlscacert string"
+"--tlscert string"
+"--tlskey string"
+"--tlsverify"
+"-v|--version")
+
+DEBUG=true
+
+# Read the variables from the configuration files
+bashc.readconffiles "$CONFIGFILES" 
+
+COMMANDLINE=( )
+
+function __check_parameter() {
+  local ADDTOCOMMANDLINE="$1"
+  local PARAM="$2"
+  shift
+  shift
+  local C_PARAM C_PARAM_NAME C_PARAM_TAIL C_TAIL
+  for C_PARAM in "$@"; do
+    read C_PARAM_NAME C_PARAM_TAIL <<< "$C_PARAM"
+    while read -d '|' C_PARAM_OPT; do
+      if [ "$C_PARAM_OPT" == "$PARAM" ]; then
+        C_PARAM_NAME="$C_PARAM_OPT"
+        break
+      fi
+    done <<< "${C_PARAM_NAME}|"
+
+    if [ "$C_PARAM_NAME" == "$PARAM" ]; then
+      [ "$ADDTOCOMMANDLINE" == "true" ] && COMMANDLINE=( "${COMMANDLINE[@]}" "$PARAM" )
+      local S_DETECTED="$PARAM"
+      while read -d ' ' C_TAIL; do
+        if [ "$C_TAIL" != "" ]; then
+          S_DETECTED="$S_DETECTED $C_TAIL"
+          bashc.parameters_next || break
+          [ "$ADDTOCOMMANDLINE" == "true" ] && COMMANDLINE=( "${COMMANDLINE[@]}" "$(bashc.parameters_current)" )
+        fi
+      done <<< "${C_PARAM_TAIL} "
+      p_debug "detected $S_DETECTED"
+      return 0
+    fi
+  done
+  return 1
+}
+
+function param_is_blacklisted() {
+  __check_parameter "false" "$@"
+  return $? 
+}
+
+function param_is_whitelisted() {
+  __check_parameter "true" "$@"
+  return $? 
+}
+
+function process_section() {
+  local SECNAME="$1"
+  local PARAMS_WHITELISTED=()
+  local PARAMS_BLACKLISTED=()
+  local L
+
+  p_debug "processing section $SECNAME"
+
+  while read -d ',' L; do
+    [ "$L" != "" ] && PARAMS_WHITELISTED=("${PARAMS_WHITELISTED[@]}" "$L")
+  done <<< "$(bashc.confsectionsget "$SECNAME" "whitelist"),"
+  while read -d ',' L; do
+    [ "$L" != "" ] && PARAMS_BLACKLISTED=("${PARAMS_BLACKLISTED[@]}" "$L")
+  done <<< "$(bashc.confsectionsget "$SECNAME" "blacklist"),"
+
+  p_debug "whitelist:" "${PARAMS_WHITELISTED[@]}"
+  p_debug "blacklist: ${PARAMS_BLACKLISTED[@]}"
+
+  local MOREPARAMS
+  local CONTINUE_WORKING=true
+  while bashc.parameters_next; do
+    PARAM="$(bashc.parameters_current)"
+    p_debug ">>>> $PARAM"
+    if param_is_blacklisted "$PARAM" "${PARAMS_BLACKLISTED[@]}"; then
+      p_debug "parameter $PARAM is blacklisted"
+      if [ "$ERROR_ON_BLACKLISTED" == "true" ]; then
+        bashc.finalize 1 "parameter $PARAM is not permitted; please remove it"
+      fi
+    elif param_is_whitelisted "$PARAM" "${PARAMS_WHITELISTED[@]}"; then
+      p_debug "parameter $PARAM is whitelisted"
+    else
+      p_debug "no identified parameters: $PARAM"
+      CONTINUE_WORKING=false
+      break
+    fi
+  done
+
+  # Now the rest of parameters are the image and the commands to run
+  if [ "$CONTINUE_WORKING" != "true" -a "${PARAM:0:1}" == "-" ]; then
+    bashc.finalize 1 "parameter $PARAM is not permitted"
+  fi
+}
+
+function process_docker_command() {
+  local PARAM
+
+  p_debug "processing command $1"
+  
+  local SECNAME VALIDCOMMAND
+  for SECNAME in $(bashc.confsections); do
+    if [ "$SECNAME" == "command:$1" ]; then
+      VALIDCOMMAND=true
+    fi
+  done
+
+  if [ "$VALIDCOMMAND" == "true" ]; then
+
+    COMMANDLINE=( "${COMMANDLINE[@]}" "$1" )
+    process_section "command:$1"
+
+    local FORCED=( )
+    local S_FORCED="$(bashc.confsectionsget "command:$1" "forced")"
+    [ "$S_FORCED" != "" ] && bashc.arrayze_cmd FORCED "$S_FORCED"
+
+    if ((${#FORCED[@]}>0)); then
+      COMMANDLINE=( "${COMMANDLINE[@]}" "${FORCED[@]}")
+    fi
+
+    if bashc.parameters_more; then
+      local CONTAINER="$(bashc.parameters_current)"
+      if [ "$CONTAINER" != "" ]; then                       # This if is defensive programming
+        COMMANDLINE=( "${COMMANDLINE[@]}" "${CONTAINER}")
+        if [ "$(bashc.confsectionsget "command:$1" "uidmustmatch")" == "true" ]; then
+          local RUNNINGUSER="$(docker inspect -f {{.Config.User}} "$CONTAINER" 2> /dev/null)"
+          local R_UID R_GID
+          IFS=':' read R_UID R_GID <<< "$RUNNINGUSER"
+          if [ "$R_UID" != "$UID" ]; then
+            bashc.finalize 1 "the user does not own container $CONTAINER"
+          fi
+        fi
+      fi
+    fi
+
+    while bashc.parameters_next; do
+      PARAM="$(bashc.parameters_current)"
+      COMMANDLINE=( "${COMMANDLINE[@]}" "$PARAM" )
+    done
+
+    return 0
+  fi
+  return 1
+}
+
+MAIN_PARAMS=()
+while read -d ',' L; do
+  [ "$L" != "" ] && MAIN_PARAMS=("${MAIN_PARAMS[@]}" "$L")
+done <<< "$(bashc.confsectionsget "main" "whitelist"),"
+bashc.dump_in_lines "${MAIN_PARAMS[@]}"
+
+bashc.parameters_start
+while bashc.parameters_next; do
+  PARAM="$(bashc.parameters_current)"
+  case "$PARAM" in
+    --unversion|-V)         p_out "$VERSION"
+                            bashc.finalize 0;;
+    --undebug)              DEBUG=true;;
+    *)
+      if ! param_is_whitelisted "$PARAM" "${MAIN_PARAMS[@]}"; then
+        if is_docker_command "$PARAM"; then 
+          p_debug "$PARAM is a command"
+          if ! process_docker_command "$PARAM"; then
+            bashc.finalize 1 "command $PARAM is not permitted"
+          fi
+        else
+          docker --help && bashc.finalize 1
+        fi
+      fi;;
+  esac
+done
+
+p_debug "final command: docker ${COMMANDLINE[@]} ${#COMMANDLINE[@]}"
+bashc.dump_in_lines "${COMMANDLINE[@]}"
+docker "${COMMANDLINE[@]}"
+
+# You should check this function to include the checks for the dependencies of your bash application
+verify_dependencies
+
