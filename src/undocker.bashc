@@ -16,27 +16,7 @@
 # limitations under the License.
 #
 
-function usage() {
-  cat <<EOF
-
-This is a template for a bash application
-
-undocker <appname>
-
-  --version | -V            Shows the version number and finalizes.
-  --verbose | -v            Shows more information about the procedure.
-  --debug                   Shows a lot more information about the procedure.
-  --help | -h               Shows this help and exits.
-EOF
-}
-
 export GID="$(id -g)"
-
-function verify_dependencies() {
-  if false; then
-    bashc.finalize 1 "dependency failed"
-  fi
-}
 
 # The list of default configuration files (it is set here just in case that you want to change it in the commandline)
 CONFIGFILES="/etc/default/undocker.conf /etc/undocker/undocker.conf /etc/undocker.conf $HOME/.undocker/undocker.conf etc/undocker.conf etc/undocker/undocker.conf undocker.conf"
@@ -125,10 +105,8 @@ PARAMS_TO_REMOVE=("--config string"
 "--tlsverify"
 "-v|--version")
 
-DEBUG=true
-
 # Read the variables from the configuration files
-bashc.readconffiles "$CONFIGFILES" 
+bashc.readconffiles "$CONFIGFILES" ERROR_ON_BLACKLISTED WHITELIST BLACKLIST FORCED UIDMUSTMATCH DOCKERPATH
 
 COMMANDLINE=( )
 
@@ -184,10 +162,10 @@ function process_section() {
 
   while read -d ',' L; do
     [ "$L" != "" ] && PARAMS_WHITELISTED=("${PARAMS_WHITELISTED[@]}" "$L")
-  done <<< "$(bashc.confsectionsget "$SECNAME" "whitelist"),"
+  done <<< "$(bashc.confsectionsget "$SECNAME" "WHITELIST"),"
   while read -d ',' L; do
     [ "$L" != "" ] && PARAMS_BLACKLISTED=("${PARAMS_BLACKLISTED[@]}" "$L")
-  done <<< "$(bashc.confsectionsget "$SECNAME" "blacklist"),"
+  done <<< "$(bashc.confsectionsget "$SECNAME" "BLACKLIST"),"
 
   p_debug "whitelist:" "${PARAMS_WHITELISTED[@]}"
   p_debug "blacklist: ${PARAMS_BLACKLISTED[@]}"
@@ -196,7 +174,6 @@ function process_section() {
   local CONTINUE_WORKING=true
   while bashc.parameters_next; do
     PARAM="$(bashc.parameters_current)"
-    p_debug ">>>> $PARAM"
     if param_is_blacklisted "$PARAM" "${PARAMS_BLACKLISTED[@]}"; then
       p_debug "parameter $PARAM is blacklisted"
       if [ "$ERROR_ON_BLACKLISTED" == "true" ]; then
@@ -235,7 +212,7 @@ function process_docker_command() {
     process_section "command:$1"
 
     local FORCED=( )
-    local S_FORCED="$(bashc.confsectionsget "command:$1" "forced")"
+    local S_FORCED="$(bashc.confsectionsget "command:$1" "FORCED")"
     [ "$S_FORCED" != "" ] && bashc.arrayze_cmd FORCED "$S_FORCED"
 
     if ((${#FORCED[@]}>0)); then
@@ -246,8 +223,12 @@ function process_docker_command() {
       local CONTAINER="$(bashc.parameters_current)"
       if [ "$CONTAINER" != "" ]; then                       # This if is defensive programming
         COMMANDLINE=( "${COMMANDLINE[@]}" "${CONTAINER}")
-        if [ "$(bashc.confsectionsget "command:$1" "uidmustmatch")" == "true" ]; then
-          local RUNNINGUSER="$(docker inspect -f {{.Config.User}} "$CONTAINER" 2> /dev/null)"
+        if [ "$(bashc.confsectionsget "command:$1" "UIDMUSTMATCH")" == "true" ]; then
+          local RUNNINGUSER
+          RUNNINGUSER="$(docker inspect -f {{.Config.User}} "$CONTAINER" 2> /dev/null)"
+          if [ $? -ne 0 ]; then
+            bashc.finalize 1 "could not check if the user $UID is the owner of container $CONTAINER"
+          fi
           local R_UID R_GID
           IFS=':' read R_UID R_GID <<< "$RUNNINGUSER"
           if [ "$R_UID" != "$UID" ]; then
@@ -267,11 +248,19 @@ function process_docker_command() {
   return 1
 }
 
-MAIN_PARAMS=()
+MAIN_WHITELIST=()
 while read -d ',' L; do
-  [ "$L" != "" ] && MAIN_PARAMS=("${MAIN_PARAMS[@]}" "$L")
-done <<< "$(bashc.confsectionsget "main" "whitelist"),"
-bashc.dump_in_lines "${MAIN_PARAMS[@]}"
+  [ "$L" != "" ] && MAIN_WHITELIST=("${MAIN_WHITELIST[@]}" "$L")
+done <<< "$(bashc.confsectionsget "main" "WHITELIST"),"
+
+MAIN_BLACKLIST=()
+while read -d ',' L; do
+  [ "$L" != "" ] && MAIN_BLACKLIST=("${MAIN_BLACKLIST[@]}" "$L")
+done <<< "$(bashc.confsectionsget "main" "BLACKLIST"),"
+
+ERROR_ON_BLACKLISTED="$(bashc.confsectionsget "main" "ERROR_ON_BLACKLISTED")"
+DOCKERPATH="$(bashc.confsectionsget "main" "DOCKERPATH")"
+DOCKERPATH="${DOCKERPATH:-docker}"
 
 bashc.parameters_start
 while bashc.parameters_next; do
@@ -281,23 +270,26 @@ while bashc.parameters_next; do
                             bashc.finalize 0;;
     --undebug)              DEBUG=true;;
     *)
-      if ! param_is_whitelisted "$PARAM" "${MAIN_PARAMS[@]}"; then
+      if param_is_blacklisted "$PARAM" "${MAIN_BLACKLIST[@]}"; then
+        p_debug "parameter $PARAM is blacklisted $ERROR_ON_BLACKLISTED"
+        if [ "$ERROR_ON_BLACKLISTED" == "true" ]; then
+          bashc.finalize 1 "parameter $PARAM is not permitted; please remove it"
+        fi
+      elif param_is_whitelisted "$PARAM" "${MAIN_WHITELIST[@]}"; then
+        p_debug "parameter $PARAM is whitelisted"
+      else
         if is_docker_command "$PARAM"; then 
           p_debug "$PARAM is a command"
           if ! process_docker_command "$PARAM"; then
             bashc.finalize 1 "command $PARAM is not permitted"
           fi
         else
-          docker --help && bashc.finalize 1
+          bashc.finalize 1 "parameter $PARAM is not permitted or not valid"
         fi
       fi;;
   esac
 done
 
-p_debug "final command: docker ${COMMANDLINE[@]} ${#COMMANDLINE[@]}"
+p_debug "final command: ${DOCKERPATH} ${COMMANDLINE[@]}"
 bashc.dump_in_lines "${COMMANDLINE[@]}"
-docker "${COMMANDLINE[@]}"
-
-# You should check this function to include the checks for the dependencies of your bash application
-verify_dependencies
-
+${DOCKERPATH} "${COMMANDLINE[@]}"

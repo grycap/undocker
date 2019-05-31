@@ -3,7 +3,7 @@ ETC=etc/*.conf
 BINDIR=bin
 SRCDIR=src
 BASHC=bashc
-BASHCFLAGS=-cSR
+BASHCFLAGS=-cSRC
 
 BINS = $(patsubst %,$(BINDIR)/%,$(BINARIES))
 
