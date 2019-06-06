@@ -302,11 +302,11 @@ function process_docker_command() {
           local RUNNINGUSER
           RUNNINGUSER="$(docker inspect -f {{.Config.User}} "$CONTAINER" 2> /dev/null)"
           if [ $? -ne 0 ]; then
-            bashc.finalize 1 "could not check if the user $UID is the owner of container $CONTAINER"
+            bashc.finalize 1 "could not check if the user $U_UID is the owner of container $CONTAINER"
           fi
           local R_UID R_GID
           IFS=':' read R_UID R_GID <<< "$RUNNINGUSER"
-          if [ "$R_UID" != "$UID" ]; then
+          if [ "$R_UID" != "$U_UID" ]; then
             bashc.finalize 1 "the user does not own container $CONTAINER"
           fi
         fi
