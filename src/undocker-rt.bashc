@@ -16,7 +16,6 @@
 # limitations under the License.
 #
 
-DEBUG=true
 # Get the user that issued the command (even if ran from SUDO)
 if [ $SUDO_USER ]; then USERNAME=$SUDO_USER; else USERNAME="$(whoami)"; fi
 
@@ -119,11 +118,10 @@ PARAMS_TO_REMOVE=("--config string"
 "-v|--version")
 
 # Read the variables from the configuration files
-bashc.readconffiles "$CONFIGFILES" ERROR_ON_BLACKLISTED WHITELIST BLACKLIST FORCED UIDMUSTMATCH DOCKERPATH
+bashc.readconffiles "$CONFIGFILES" ERROR_ON_BLACKLISTED WHITELIST BLACKLIST FORCED UIDMUSTMATCH DOCKERPATH ALLOWEDIMAGES RESTRICTEDIMAGES
 
 COMMANDLINE=( )
 LHS_COMMANDLINE=()
-RHS_COMMANDLINE=()
 
 function __check_parameter() {
   local ADDTOCOMMANDLINE="$1"
@@ -168,19 +166,20 @@ function param_is_whitelisted() {
 }
 
 function process_section() {
-  local SECNAME="$1"
   local PARAMS_WHITELISTED=()
   local PARAMS_BLACKLISTED=()
+  local PARAMS_WHITELIST="$1"
+  local PARAMS_BLACKLIST="$2"
   local L
 
-  p_debug "processing section $SECNAME"
+  p_debug "processing parameters lists"
 
   while read -d ',' L; do
     [ "$L" != "" ] && PARAMS_WHITELISTED=("${PARAMS_WHITELISTED[@]}" "$L")
-  done <<< "$(bashc.confsectionsget "$SECNAME" "WHITELIST"),"
+  done <<< "$PARAMS_WHITELIST,"
   while read -d ',' L; do
     [ "$L" != "" ] && PARAMS_BLACKLISTED=("${PARAMS_BLACKLISTED[@]}" "$L")
-  done <<< "$(bashc.confsectionsget "$SECNAME" "BLACKLIST"),"
+  done <<< "$PARAMS_BLACKLIST,"
 
   p_debug "whitelist:" "${PARAMS_WHITELISTED[@]}"
   p_debug "blacklist: ${PARAMS_BLACKLISTED[@]}"
@@ -205,48 +204,101 @@ function process_section() {
 
   # Now the rest of parameters are the image and the commands to run
   if [ "$CONTINUE_WORKING" != "true" -a "${PARAM:0:1}" == "-" ]; then
-    p_warning "parameter $PARAM is not permitted in $SECNAME"
+    p_warning "parameter $PARAM is not permitted"
     return 1
   fi
   return 0
 }
 
-function process_docker_command() {
-  local PARAM
-  local GROUPSTR="$2"
 
-  bashc.parameters_checkpoint
-  p_debug "processing command ${1}${GROUPSTR}"
-  
-  local SECNAME VALIDCOMMAND
+function build_config() {
+  local SECNAME
   while read SECNAME; do
-    if [ "$SECNAME" == "command:$1${GROUPSTR}" ]; then
-      VALIDCOMMAND=true
-      break
+    if [ "$SECNAME" == "command:$1" ]; then
+      SECNAME="command:$1"
+      CONFIG_WHITELIST="${CONFIG_WHITELIST},$(bashc.confsectionsget "$SECNAME" "WHITELIST")"
+      CONFIG_BLACKLIST="${CONFIG_BLACKLIST},$(bashc.confsectionsget "$SECNAME" "BLACKLIST")"
+      CONFIG_FORCED="${CONFIG_FORCED} $(bashc.confsectionsget "$SECNAME" "FORCED")"
+      CONFIG_ALLOWEDIMAGES="${CONFIG_ALLOWEDIMAGES} $(bashc.confsectionsget "$SECNAME" "ALLOWEDIMAGES")"
+      CONFIG_RESTRICTEDIMAGES="${CONFIG_RESTRICTEDIMAGES} $(bashc.confsectionsget "$SECNAME" "RESTRICTEDIMAGES")"
+      if [ "$CONFIG_UIDMUSTMATCH" != "true" ]; then
+        # Use the most restrictive case
+        CONFIG_UIDMUSTMATCH="$(bashc.confsectionsget "$SECNAME" "UIDMUSTMATCH")"
+      fi
+      return 0
     fi
   done <<< "$(bashc.confsections)"
+  return 1
+}
+
+function process_docker_command() {
+  local PARAM
+
+  bashc.parameters_checkpoint
+  p_debug "processing command ${1}"
+  
+  local SECNAME VALIDCOMMAND
+  local CONFIG_WHITELIST=
+  local CONFIG_BLACKLIST=
+  local CONFIG_FORCED=
+  local CONFIG_UIDMUSTMATCH=
+  local CONFIG_ALLOWEDIMAGES=
+  local CONFIG_RESTRICTEDIMAGES=
+
+  # First we get the info from the general command
+  if build_config "$1"; then
+    p_debug "configuration for command $1 found"
+    VALIDCOMMAND=true
+  fi
+
+  # This is a per-group permission... currently the first match is the one that is accepted.
+  #   there is no inheritance of options in the different per-group commands 
+  local C_GROUP
+  for C_GROUP in $GROUPNAMES; do
+    if build_config "$1 group:$C_GROUP"; then
+      p_debug "configuration for command $1 for group '$C_GROUP' found"
+      VALIDCOMMAND=true
+    fi
+  done
+
+  # Finally capture the configuration for the specific username
+  if build_config "$1 user:$USERNAME"; then
+    p_debug "configuration for command $1 for user '$USERNAME' found"
+    VALIDCOMMAND=true
+  fi
 
   if [ "$VALIDCOMMAND" == "true" ]; then
+    # Trim the values because of how the list was constructed (i.e. adding whitespaces)
+    CONFIG_ALLOWEDIMAGES="$(bashc.trim "$CONFIG_ALLOWEDIMAGES")"
+    CONFIG_RESTRICTEDIMAGES="$(bashc.trim "$CONFIG_RESTRICTEDIMAGES")"
+    CONFIG_FORCED="$(bashc.trim "$CONFIG_FORCED")"
 
-    if ! process_section "$SECNAME"; then
+    bashc.dump_vars CONFIG_WHITELIST CONFIG_BLACKLIST CONFIG_FORCED CONFIG_UIDMUSTMATCH CONFIG_ALLOWEDIMAGES CONFIG_RESTRICTEDIMAGES
+
+    if ! process_section "$CONFIG_WHITELIST" "$CONFIG_BLACKLIST"; then
       p_warning "failed to validate command in section $SECNAME"
       bashc.parameters_tocheckpoint
       return 1
     fi
 
     local FORCED=( )
-    local S_FORCED="$(bashc.confsectionsget "$SECNAME" "FORCED")"
-    [ "$S_FORCED" != "" ] && bashc.arrayze_cmd FORCED "$S_FORCED"
+    [ "$CONFIG_FORCED" != "" ] && bashc.arrayze_cmd FORCED "$CONFIG_FORCED"
 
     if ((${#FORCED[@]}>0)); then
       COMMANDLINE=( "${COMMANDLINE[@]}" "${FORCED[@]}")
     fi
 
+    bashc.dump_in_lines "${COMMANDLINE[@]}"
+
     if bashc.parameters_more; then
       local CONTAINER="$(bashc.parameters_current)"
       if [ "$CONTAINER" != "" ]; then                       # This if is defensive programming
         COMMANDLINE=( "${COMMANDLINE[@]}" "${CONTAINER}")
-        if [ "$(bashc.confsectionsget "$SECNAME" "UIDMUSTMATCH")" == "true" ]; then
+
+        # If the configuration has the UIDMUSTMATCH value, we'll assume that the parameter is the
+        #   name of a container (e.g. docker exec <containername> or docker commit <containername>),
+        #   and then proceed only if the user is the owner (it was launched using -u UID)
+        if [ "$CONFIG_UIDMUSTMATCH" == "true" ]; then
           local RUNNINGUSER
           RUNNINGUSER="$(docker inspect -f {{.Config.User}} "$CONTAINER" 2> /dev/null)"
           if [ $? -ne 0 ]; then
@@ -258,14 +310,40 @@ function process_docker_command() {
             bashc.finalize 1 "the user does not own container $CONTAINER"
           fi
         fi
+
+        # If the configuration has restricted images, abort if the guessed image is in the list
+        if [ "$CONFIG_RESTRICTEDIMAGES" != "" ]; then
+          local VALID_IMAGE=false
+          local L
+          while read -d " " L; do
+            if [[ $CONTAINER =~ ^$L$ ]] || [[ ${CONTAINER}:latest =~ ^$L$ ]]; then
+              p_error "$CONTAINER is a restricted image"
+              bashc.parameters_tocheckpoint
+              return 1
+            fi
+          done <<< "${CONFIG_RESTRICTEDIMAGES} "
+        fi
+
+        # If the configuration has allowed images, proceed only if the guessed image is in the list
+        if [ "$CONFIG_ALLOWEDIMAGES" != "" ]; then
+          local VALID_IMAGE=false
+          local L
+          while read -d " " L; do
+            p_debug "($L) ($CONTAINER)"
+            if [[ $CONTAINER =~ ^$L$ ]] || [[ ${CONTAINER}:latest =~ ^$L$ ]]; then
+              VALID_IMAGE=true
+              break
+            fi
+          done <<< "${CONFIG_ALLOWEDIMAGES} "
+
+          if [ "$VALID_IMAGE" != "true" ]; then
+            p_error "$CONTAINER is not an allowed image"
+            bashc.parameters_tocheckpoint
+            return 1
+          fi
+        fi
       fi
     fi
-
-    while bashc.parameters_next; do
-      PARAM="$(bashc.parameters_current)"
-      COMMANDLINE=( "${COMMANDLINE[@]}" "$PARAM" )
-    done
-
     return 0
   fi
   
@@ -273,6 +351,7 @@ function process_docker_command() {
   return 1
 }
 
+# Build the list of command allowed and blacklisted from the configuration
 MAIN_WHITELIST=()
 while read -d ',' L; do
   [ "$L" != "" ] && MAIN_WHITELIST=("${MAIN_WHITELIST[@]}" "$L")
@@ -283,10 +362,12 @@ while read -d ',' L; do
   [ "$L" != "" ] && MAIN_BLACKLIST=("${MAIN_BLACKLIST[@]}" "$L")
 done <<< "$(bashc.confsectionsget "main" "BLACKLIST"),"
 
+# Get the rest of settings
 ERROR_ON_BLACKLISTED="$(bashc.confsectionsget "main" "ERROR_ON_BLACKLISTED")"
 DOCKERPATH="$(bashc.confsectionsget "main" "DOCKERPATH")"
 DOCKERPATH="${DOCKERPATH:-docker}"
 
+# Process the commandline
 bashc.parameters_start
 while bashc.parameters_next; do
   PARAM="$(bashc.parameters_current)"
@@ -296,6 +377,7 @@ while bashc.parameters_next; do
     --undebug)              DEBUG=true;;
     --norun)                RUNDOCKER=false;;
     *)
+      # Check whether the params are whitelisted or blacklisted
       if param_is_blacklisted "$PARAM" "${MAIN_BLACKLIST[@]}"; then
         p_debug "parameter $PARAM is blacklisted $ERROR_ON_BLACKLISTED"
         if [ "$ERROR_ON_BLACKLISTED" == "true" ]; then
@@ -304,35 +386,26 @@ while bashc.parameters_next; do
       elif param_is_whitelisted "$PARAM" "${MAIN_WHITELIST[@]}"; then
         p_debug "parameter $PARAM is whitelisted"
       else
+        # If they are not in a list, we assume that the parameter is a docker command
         if is_docker_command "$PARAM"; then 
           p_debug "$PARAM is a command"
-          LHS_COMMANDLINE=( "${COMMANDLINE[@]}" )
-          COMMAND_RECOGNISED=false
 
-          COMMANDLINE=()
+          # Now we capture the current part of the commandline and then try to process the 
+          # docker command and capture the parameters to that command
+          LHS_COMMANDLINE=( "${COMMANDLINE[@]}" )
+          COMMANDLINE=("$PARAM")
+
           if process_docker_command "$PARAM"; then
             p_debug "command $PARAM succeeded"
-            COMMAND_RECOGNISED=true
-          elif process_docker_command "$PARAM" " user:$USERNAME"; then
-            p_debug "command $PARAM succeeded for user $USERNAME"
-            COMMAND_RECOGNISED=true
-          else
-            # This is a per-group permission... currently the first match is the one that is accepted.
-            #   there is no inheritance of options in the different per-group commands 
-            for C_GROUP in "" $GROUPNAMES; do
-              COMMANDLINE=()
-              if process_docker_command "$PARAM" " group:$C_GROUP"; then
-                p_debug "command $PARAM for group '$C_GROUP' succeeded"
-                COMMAND_RECOGNISED=true
-                break
-              fi
+
+            # Capture the rest of parameters
+            while bashc.parameters_next; do
+              PARAM="$(bashc.parameters_current)"
+              COMMANDLINE=( "${COMMANDLINE[@]}" "$PARAM" )
             done
+          else
+            bashc.finalize 1 "invalid commandline"
           fi
-          if [ "$COMMAND_RECOGNISED" == "false" ]; then
-              bashc.finalize 1 "command $PARAM is not permitted"
-          fi
-          RHS_COMMANDLINE=( "${RHS_COMMANDLINE[@]}" "${COMMANDLINE[@]}")
-          COMMANDLINE=( "$PARAM" )
           break
         else
           bashc.finalize 1 "parameter $PARAM is not permitted or not valid"
@@ -341,8 +414,8 @@ while bashc.parameters_next; do
   esac
 done
 
-p_debug "final command: ${DOCKERPATH} ${LHS_COMMANDLINE[@]} ${COMMANDLINE[@]} ${RHS_COMMANDLINE[@]}"
-bashc.dump_in_lines "${COMMANDLINE[@]}"
+p_debug "final command: ${DOCKERPATH} ${LHS_COMMANDLINE[@]} ${COMMANDLINE[@]}"
+bashc.dump_in_lines "${LHS_COMMANDLINE[@]}" "${COMMANDLINE[@]}"
 if [ "$RUNDOCKER" != "false" ]; then
-  ${DOCKERPATH} "${LHS_COMMANDLINE[@]}" "${COMMANDLINE[@]}" "${RHS_COMMANDLINE[@]}"
+  "${DOCKERPATH}" "${LHS_COMMANDLINE[@]}" "${COMMANDLINE[@]}"
 fi
