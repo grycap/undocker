@@ -7,7 +7,7 @@ int main(int argc, char *argv[]) {
   char **params = (char**)malloc((argc+1)*sizeof(char*));
   for (int i=0;i<argc;i++) params[i]=argv[i];
   params[argc]=0;
-  char app[]="/usr/bin/undocker";
+  char app[]="/usr/bin/undocker-rt";
   params[0]=app;
   if (setuid(0)) {
     printf("failed to get root permissions\n");

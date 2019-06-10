@@ -16,7 +16,7 @@
 # limitations under the License.
 #
 
-BINARIES=undocker undocker-rt undocker-rtb
+BINARIES=undocker undocker-rt undocker-rts
 BINDEST=/usr/bin
 ETC=etc/*.conf etc/sudoers.d/undocker
 COMMONFILES=LICENSE src/version README.md
@@ -33,8 +33,8 @@ all:	$(BINS)
 $(BINDIR)/%:	$(SRCDIR)/%.bashc | $(BINDIR)
 	$(BASHC) $(BASHCFLAGS) -o $@ -c $^
 
-$(BINDIR)/undocker-rtb: 
-	$(GCC) -o $@ $(SRCDIR)/undocker-rtb.c
+$(BINDIR)/undocker-rts: 
+	$(GCC) -o $@ $(SRCDIR)/undocker-rts.c
 	chmod u+s $@
 
 $(BINDIR):
@@ -51,9 +51,9 @@ install-bin: $(BINS)
 	@mkdir -p $(DESTDIR)$(BINDEST)
 	@for f in $(wildcard $^); do echo install -m 755 $$f $(DESTDIR)$(BINDEST); install -m 755 $$f $(DESTDIR)$(BINDEST); done
 
-install-setuid: $(BINDIR)/undocker-rtb
-	@echo install -m 4755 $(BINDIR)/undocker-rtb $(DESTDIR)$(BINDEST)
-	@install -o root -m 4755 $(BINDIR)/undocker-rtb $(DESTDIR)$(BINDEST)
+install-setuid: $(BINDIR)/undocker-rts
+	@echo install -m 4755 $(BINDIR)/undocker-rts $(DESTDIR)$(BINDEST)
+	@install -o root -m 4755 $(BINDIR)/undocker-rts $(DESTDIR)$(BINDEST)
 
 install-common: $(COMMONFILES)
 	@mkdir -p $(DESTDIR)/usr/share/undocker
