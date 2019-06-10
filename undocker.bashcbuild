@@ -29,5 +29,6 @@ REQUIRES="bash tar coreutils gawk gettext sudo"
 /usr/share/$PACKAGE/;README.md:src/version:LICENSE
 /etc/;etc/*.conf;;chmod 600 ${DESTINATION}/${FILENAME}
 /etc/sudoers.d/;etc/sudoers.d/undocker;;chmod 440 ${DESTINATION}/${FILENAME}
+/etc/bash_completion.d/;etc/bash_completion.d/undocker;;chmod 644 ${DESTINATION}/${FILENAME}
 ;src/undocker-rt:src/undocker;bashc -o $TMPDIR/$FILENAME -cCS $FILEPATH.bashc;chmod +x $TMPDIR/$FILENAME
 /usr/bin/;$TMPDIR/undocker:$TMPDIR/undocker-rt

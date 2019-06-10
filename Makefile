@@ -18,7 +18,7 @@
 
 BINARIES=undocker undocker-rt undocker-rts
 BINDEST=/usr/bin
-ETC=etc/*.conf etc/sudoers.d/undocker
+ETC=etc/*.conf etc/bash_completion.d/undocker etc/sudoers.d/undocker
 COMMONFILES=LICENSE src/version README.md
 BINDIR=bin
 SRCDIR=src
@@ -45,7 +45,7 @@ clean:
 
 install-etc: $(ETC)
 	@mkdir -p $(DESTDIR)/etc
-	@for f in $(wildcard $^); do DD=$(DESTDIR)/`dirname $$f`; mkdir -p $$DD; echo install -m 600 $$f $$DD; install -m 600 $$f $$DD; done
+	@for f in $(wildcard $^); do DD=$(DESTDIR)/`dirname $$f`; mkdir -p $$DD; echo install -m 644 $$f $$DD; install -m 644 $$f $$DD; done
 
 install-bin: $(BINS)
 	@mkdir -p $(DESTDIR)$(BINDEST)

@@ -1,0 +1,5 @@
+#!/bin/bash
+if [ -e /usr/share/bash-completion/completions/docker ]; then
+  . /usr/share/bash-completion/completions/docker 
+  complete -F _docker undocker
+fi
